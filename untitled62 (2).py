@@ -40,18 +40,24 @@ def hex_value(ch):
 def parse_number(tokens):
     if not tokens:
         return None
+
     value = 0
+
     for t in tokens:
         d = hex_value(t)
+
         if d is None:
             return None
+
         value = value * 16 + d
+
     return value
 
 
 def convert_symbols(raw):
     tokens = []
     i = 0
+
     while i < len(raw):
         if raw[i] == "PLUS_L":
             if i + 1 < len(raw) and raw[i + 1] == "MINUS":
@@ -59,18 +65,23 @@ def convert_symbols(raw):
                 i += 2
             else:
                 return None
+
         elif raw[i] == "MINUS":
             tokens.append("-")
             i += 1
+
         elif raw[i] == "MUL":
             tokens.append("*")
             i += 1
+
         elif raw[i] == "EQ":
             tokens.append("=")
             i += 1
+
         else:
             tokens.append(raw[i])
             i += 1
+
     return tokens
 
 
@@ -79,32 +90,42 @@ def evaluate(tokens):
         return False
 
     eq = tokens.index("=")
+
     left = tokens[:eq]
     right = tokens[eq + 1:]
 
     rhs = parse_number(right)
+
     if rhs is None:
         return False
 
-    nums, ops, cur = [], [], []
+    nums = []
+    ops = []
+    cur = []
 
     for t in left:
         if t in "+-*":
             n = parse_number(cur)
+
             if n is None:
                 return False
+
             nums.append(n)
             ops.append(t)
             cur = []
+
         else:
             cur.append(t)
 
     n = parse_number(cur)
+
     if n is None:
         return False
+
     nums.append(n)
 
     i = 0
+
     while i < len(ops):
         if ops[i] == "*":
             nums[i] *= nums[i + 1]
@@ -114,6 +135,7 @@ def evaluate(tokens):
             i += 1
 
     result = nums[0]
+
     for op, val in zip(ops, nums[1:]):
         if op == "+":
             result += val
@@ -125,11 +147,15 @@ def evaluate(tokens):
 
 def raw_symbols(observed):
     raw = []
+
     for s in observed:
         key = "".join(sorted(s))
+
         if key not in SEG_TO_SYMBOL:
             return None
+
         raw.append(SEG_TO_SYMBOL[key])
+
     return raw
 
 
@@ -149,51 +175,78 @@ def find_broken(observed):
             candidate[i] = "".join(sorted(fixed))
 
             raw = raw_symbols(candidate)
+
             if raw is None:
                 continue
 
             tokens = convert_symbols(raw)
+
             if evaluate(tokens):
                 return i + 1, seg, True
 
     return 1, "a", False
 
 
-def candidate_score(observed):
+def candidate_score(observed, confidence=0.0):
     if not (1 <= len(observed) <= 16):
         return (-999,)
 
     known = sum(1 for s in observed if "".join(sorted(s)) in SEG_TO_SYMBOL)
+
     _, _, valid = find_broken(observed)
 
     raw = raw_symbols(observed)
+
     eq_bonus = 0
     plus_bonus = 0
+    structure_bonus = 0
 
     if raw is not None:
         if raw.count("EQ") == 1:
             eq_bonus = 2
+
         for i in range(len(raw) - 1):
             if raw[i] == "PLUS_L" and raw[i + 1] == "MINUS":
                 plus_bonus += 1
 
-    return (100 if valid else 0, known, eq_bonus, plus_bonus, len(observed))
+        tokens = convert_symbols(raw)
+
+        if tokens is not None and tokens.count("=") == 1:
+            eq = tokens.index("=")
+
+            if 0 < eq < len(tokens) - 1:
+                structure_bonus = 1
+
+    return (
+        100 if valid else 0,
+        known,
+        eq_bonus,
+        structure_bonus,
+        plus_bonus,
+        len(observed),
+        round(confidence, 5),
+    )
 
 
 def background_color(img):
     sample = img[::20, ::20].reshape(-1, 3)
     q = (sample // 8).astype(np.int16)
+
     colors, counts = np.unique(q, axis=0, return_counts=True)
+
     return (colors[np.argmax(counts)] * 8 + 4).astype(np.float32)
 
 
 def clean_mask(mask, min_area):
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+
     clean = np.zeros_like(mask)
 
     areas = []
+
     for i in range(1, n):
         a = stats[i, cv2.CC_STAT_AREA]
+
         if a >= min_area:
             areas.append(a)
 
@@ -201,11 +254,13 @@ def clean_mask(mask, min_area):
         return clean
 
     med = np.median(areas)
+
     lo = max(min_area, med * 0.02)
-    hi = med * 250
+    hi = med * 300
 
     for i in range(1, n):
         a = stats[i, cv2.CC_STAT_AREA]
+
         if lo <= a <= hi:
             clean[labels == i] = 255
 
@@ -214,20 +269,28 @@ def clean_mask(mask, min_area):
 
 def make_masks(img):
     bg = background_color(img)
+
     diff = np.linalg.norm(img.astype(np.float32) - bg[None, None, :], axis=2)
 
     display_mask = (diff > 25).astype(np.uint8) * 255
 
     b, g, r = cv2.split(img)
+
     b = b.astype(np.int16)
     g = g.astype(np.int16)
     r = r.astype(np.int16)
 
-    red = (r > 120) & (r > g + 45) & (r > b + 45)
-    green = (g > 120) & (g > r + 45) & (g > b + 45)
-    blue = (b > 120) & (b > r + 45) & (b > g + 45)
+    red = (r > 115) & (r > g + 40) & (r > b + 40)
+    green = (g > 115) & (g > r + 40) & (g > b + 40)
+    blue = (b > 115) & (b > r + 40) & (b > g + 40)
 
-    active_mask = ((red | green | blue) & (diff > 45)).astype(np.uint8) * 255
+    active_mask = ((red | green | blue) & (diff > 40)).astype(np.uint8) * 255
+
+    display_mask = cv2.morphologyEx(display_mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    display_mask = cv2.morphologyEx(display_mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+
+    active_mask = cv2.morphologyEx(active_mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    active_mask = cv2.morphologyEx(active_mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
 
     display_mask = clean_mask(display_mask, 3)
     active_mask = clean_mask(active_mask, 5)
@@ -242,8 +305,10 @@ def mask_points(mask):
 
 def pca_axes(points):
     center = points.mean(axis=0)
+
     q = points - center
     cov = np.cov(q.T)
+
     vals, vecs = np.linalg.eigh(cov)
 
     x_axis = vecs[:, np.argmax(vals)].astype(np.float32)
@@ -262,19 +327,27 @@ def project(points, center, x_axis, y_axis):
 def split_intervals(xvals, close_size):
     xmin = int(np.floor(xvals.min()))
     xmax = int(np.ceil(xvals.max()))
+
     w = xmax - xmin + 1
 
     if w <= 0:
         return []
 
     hist = np.zeros(w, dtype=np.uint8)
+
     xs = np.clip((xvals - xmin).astype(np.int32), 0, w - 1)
     hist[xs] = 255
 
     kernel = np.ones((1, close_size), np.uint8)
-    closed = cv2.morphologyEx(hist.reshape(1, -1), cv2.MORPH_CLOSE, kernel).ravel()
+
+    closed = cv2.morphologyEx(
+        hist.reshape(1, -1),
+        cv2.MORPH_CLOSE,
+        kernel,
+    ).ravel()
 
     intervals = []
+
     inside = False
     start = 0
 
@@ -282,6 +355,7 @@ def split_intervals(xvals, close_size):
         if v and not inside:
             start = i
             inside = True
+
         elif not v and inside:
             if i - start > 4:
                 intervals.append((start + xmin, i + xmin))
@@ -295,15 +369,19 @@ def split_intervals(xvals, close_size):
 
 def active_components(mask):
     n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, 8)
+
     comps = []
 
     for i in range(1, n):
         area = stats[i, cv2.CC_STAT_AREA]
+
         if area < 10:
             continue
 
         ys, xs = np.where(labels == i)
+
         pts = np.column_stack([xs, ys]).astype(np.float32)
+
         comps.append((pts, np.array(centroids[i], dtype=np.float32)))
 
     return comps
@@ -311,8 +389,10 @@ def active_components(mask):
 
 def classify_components(group, interval, gymin, gymax):
     active = set()
+    conf = 0.0
 
     x1, x2 = interval
+
     W = max(x2 - x1, 1.0)
     H = max(gymax - gymin, 1.0)
 
@@ -320,22 +400,31 @@ def classify_components(group, interval, gymin, gymax):
         nx = (cx - x1) / W
         ny = (cy - gymin) / H
 
-        if rx >= ry * 1.25:
+        if rx >= ry * 1.20:
             if ny < 0.30:
                 active.add("a")
+                conf += abs(0.15 - ny)
             elif ny > 0.70:
                 active.add("d")
+                conf += abs(0.85 - ny)
             else:
                 active.add("g")
-        elif ry >= rx * 1.25:
+                conf += abs(0.50 - ny)
+
+        elif ry >= rx * 1.20:
             if nx >= 0.50 and ny < 0.50:
                 active.add("b")
+                conf += abs(nx - 0.85) + abs(ny - 0.25)
             elif nx >= 0.50 and ny >= 0.50:
                 active.add("c")
+                conf += abs(nx - 0.85) + abs(ny - 0.75)
             elif nx < 0.50 and ny >= 0.50:
                 active.add("e")
+                conf += abs(nx - 0.15) + abs(ny - 0.75)
             else:
                 active.add("f")
+                conf += abs(nx - 0.15) + abs(ny - 0.25)
+
         else:
             if ny < 0.25:
                 active.add("a")
@@ -344,19 +433,62 @@ def classify_components(group, interval, gymin, gymax):
             else:
                 active.add("g")
 
-    return "".join(sorted(active))
+    return "".join(sorted(active)), -conf
+
+
+def classify_pixels(active_xy, interval, gymin, gymax, threshold):
+    if len(active_xy) < 8:
+        return "", 0.0
+
+    px = active_xy[:, 0]
+    py = active_xy[:, 1]
+
+    x1, x2 = interval
+
+    W = max(x2 - x1, 1.0)
+    H = max(gymax - gymin, 1.0)
+
+    nx = (px - x1) / W
+    ny = (py - gymin) / H
+
+    regions = {
+        "a": (0.16, 0.84, 0.00, 0.24),
+        "b": (0.55, 1.00, 0.06, 0.54),
+        "c": (0.55, 1.00, 0.46, 0.94),
+        "d": (0.16, 0.84, 0.76, 1.00),
+        "e": (0.00, 0.45, 0.46, 0.94),
+        "f": (0.00, 0.45, 0.06, 0.54),
+        "g": (0.16, 0.84, 0.36, 0.64),
+    }
+
+    active = []
+    conf = 0.0
+
+    for seg, (xa, xb, ya, yb) in regions.items():
+        inside = (nx >= xa) & (nx <= xb) & (ny >= ya) & (ny <= yb)
+
+        ratio = inside.sum() / len(nx)
+
+        conf += abs(ratio - threshold)
+
+        if ratio > threshold:
+            active.append(seg)
+
+    return "".join(sorted(active)), conf
 
 
 def solve_component(img):
     display_mask, active_mask = make_masks(img)
 
     display_pts = mask_points(display_mask)
+    active_pts = mask_points(active_mask)
     comps = active_components(active_mask)
 
-    if len(display_pts) < 10 or not comps:
+    if len(display_pts) < 10 or len(active_pts) < 8:
         return []
 
     center, x0, y0 = pca_axes(display_pts)
+
     candidates = []
 
     for sx in [1, -1]:
@@ -365,35 +497,71 @@ def solve_component(img):
             y_axis = y0 * sy
 
             dx, dy = project(display_pts, center, x_axis, y_axis)
+
+            ax, ay = project(active_pts, center, x_axis, y_axis)
+            active_projected = np.column_stack([ax, ay]).astype(np.float32)
+
             gymin, gymax = np.percentile(dy, [1, 99])
 
             comp_data = []
+
             for pts, cen in comps:
                 xp, yp = project(pts, center, x_axis, y_axis)
                 cp_x, cp_y = project(cen[None, :], center, x_axis, y_axis)
 
-                comp_data.append((
-                    float(cp_x[0]),
-                    float(cp_y[0]),
-                    float(xp.max() - xp.min()),
-                    float(yp.max() - yp.min()),
-                ))
+                comp_data.append(
+                    (
+                        float(cp_x[0]),
+                        float(cp_y[0]),
+                        float(xp.max() - xp.min()),
+                        float(yp.max() - yp.min()),
+                    )
+                )
 
             for close_size in [5, 8, 10, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 100, 130, 160, 200]:
                 intervals = split_intervals(dx, close_size)
-                observed = []
+
+                observed_comp = []
+                conf_comp = 0.0
+
+                observed_pix_1 = []
+                conf_pix_1 = 0.0
+
+                observed_pix_2 = []
+                conf_pix_2 = 0.0
 
                 for a, b in intervals:
                     group = [c for c in comp_data if a - 2 <= c[0] <= b + 2]
-                    segs = classify_components(group, (a, b), gymin, gymax)
-                    if segs:
-                        observed.append((a, segs))
 
-                observed.sort(key=lambda z: z[0])
-                obs = [s for _, s in observed]
+                    segs_c, cconf = classify_components(group, (a, b), gymin, gymax)
 
-                if 1 <= len(obs) <= 16:
-                    candidates.append((candidate_score(obs), obs))
+                    if segs_c:
+                        observed_comp.append((a, segs_c))
+                        conf_comp += cconf
+
+                    idx = (active_projected[:, 0] >= a) & (active_projected[:, 0] <= b)
+
+                    segs_p1, pconf1 = classify_pixels(active_projected[idx], (a, b), gymin, gymax, 0.030)
+                    segs_p2, pconf2 = classify_pixels(active_projected[idx], (a, b), gymin, gymax, 0.045)
+
+                    if segs_p1:
+                        observed_pix_1.append((a, segs_p1))
+                        conf_pix_1 += pconf1
+
+                    if segs_p2:
+                        observed_pix_2.append((a, segs_p2))
+                        conf_pix_2 += pconf2
+
+                for observed_pos, conf in [
+                    (observed_comp, conf_comp),
+                    (observed_pix_1, conf_pix_1),
+                    (observed_pix_2, conf_pix_2),
+                ]:
+                    observed_pos.sort(key=lambda z: z[0])
+                    obs = [s for _, s in observed_pos]
+
+                    if 1 <= len(obs) <= 16:
+                        candidates.append((candidate_score(obs, conf), obs))
 
     return candidates
 
@@ -416,6 +584,7 @@ def solve(path):
         return
 
     candidates.sort(key=lambda x: x[0], reverse=True)
+
     observed = candidates[0][1]
 
     broken_display, broken_segment, _ = find_broken(observed)
