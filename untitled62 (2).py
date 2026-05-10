@@ -420,13 +420,33 @@ def solve_component(img, close_sizes, thresholds):
 
     display_pts = mask_points(display_mask)
     active_pts = mask_points(active_mask)
-    comps = active_components(active_mask)
 
     if len(display_pts) < 10 or len(active_pts) < 8:
         return []
 
     center, x0, y0 = pca_axes(display_pts)
+
     candidates = []
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(display_mask, 8)
+    display_boxes = []
+
+    for i in range(1, n):
+        area = stats[i, cv2.CC_STAT_AREA]
+        if area < 40:
+            continue
+
+        w = stats[i, cv2.CC_STAT_WIDTH]
+        h = stats[i, cv2.CC_STAT_HEIGHT]
+
+        if w < 4 or h < 4:
+            continue
+
+        pts_y, pts_x = np.where(labels == i)
+        pts = np.column_stack([pts_x, pts_y]).astype(np.float32)
+        display_boxes.append(pts)
+
+    comps = active_components(active_mask)
 
     for sx in [1, -1]:
         for sy in [1, -1]:
@@ -454,9 +474,23 @@ def solve_component(img, close_sizes, thresholds):
                     )
                 )
 
-            for close_size in close_sizes:
-                intervals = split_intervals(dx, close_size)
+            all_interval_sets = []
 
+            for close_size in close_sizes:
+                all_interval_sets.append(split_intervals(dx, close_size))
+
+            comp_intervals = []
+
+            for pts in display_boxes:
+                xp, yp = project(pts, center, x_axis, y_axis)
+                comp_intervals.append((float(xp.min()), float(xp.max())))
+
+            comp_intervals.sort(key=lambda z: z[0])
+
+            if 1 <= len(comp_intervals) <= 16:
+                all_interval_sets.append(comp_intervals)
+
+            for intervals in all_interval_sets:
                 observed_comp = []
                 conf_comp = 0.0
 
@@ -506,38 +540,57 @@ def solve(path):
         print(f"{BROKEN_INDEX_BASE} a")
         return
 
-    base_img = resize_image(img0, BASE_MAX_SIZE)
+    configs = [
+        (
+            BASE_MAX_SIZE,
+            [5, 8, 10, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 100, 130, 160, 200],
+            [0.025, 0.035, 0.050],
+        ),
+        (
+            1400,
+            [5, 8, 10, 12, 16, 20, 24, 28, 32, 36, 40, 48, 56, 64, 72, 80, 96, 100, 130, 160, 200],
+            [0.022, 0.028, 0.035, 0.045, 0.055],
+        ),
+        (
+            EXTRA_MAX_SIZE,
+            [5, 8, 10, 12, 16, 20, 24, 28, 32, 36, 40, 48, 56, 64, 72, 80, 96, 100, 130, 160, 200],
+            [0.020, 0.025, 0.030, 0.035, 0.040, 0.050],
+        ),
+    ]
 
-    base_close = [5, 8, 10, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 100, 130, 160, 200]
-    base_thr = [0.025, 0.035, 0.050]
+    best_score = None
+    best_obs = None
 
-    base_candidates = solve_component(base_img, base_close, base_thr)
-    base_score, base_obs = best_candidate(base_candidates)
+    for max_size, close_sizes, thresholds in configs:
+        img = resize_image(img0, max_size)
+        candidates = solve_component(img, close_sizes, thresholds)
+        score, obs = best_candidate(candidates)
 
-    if base_score is not None and base_score[0] >= 100:
-        observed = base_obs
-    else:
-        extra_img = resize_image(img0, EXTRA_MAX_SIZE)
-        extra_close = [5, 8, 10, 12, 16, 20, 24, 28, 32, 36, 40, 48, 56, 64, 72, 80, 96, 100, 130, 160, 200]
-        extra_thr = [0.020, 0.025, 0.030, 0.035, 0.040, 0.050]
+        if score is None:
+            continue
 
-        extra_candidates = solve_component(extra_img, extra_close, extra_thr)
-        extra_score, extra_obs = best_candidate(extra_candidates)
+        if best_score is None or score > best_score:
+            best_score = score
+            best_obs = obs
 
-        if extra_score is not None:
-            observed = extra_obs
-        elif base_obs is not None:
-            observed = base_obs
-        else:
-            print(0)
-            print()
-            print(f"{BROKEN_INDEX_BASE} a")
-            return
+        if max_size == BASE_MAX_SIZE and score[0] >= 100:
+            best_obs = obs
+            break
 
-    broken_display, broken_segment, _ = find_broken(observed)
+        if score[0] >= 100 and score[1] == len(obs):
+            best_obs = obs
+            break
 
-    print(len(observed))
-    print(" ".join(observed))
+    if best_obs is None:
+        print(0)
+        print()
+        print(f"{BROKEN_INDEX_BASE} a")
+        return
+
+    broken_display, broken_segment, _ = find_broken(best_obs)
+
+    print(len(best_obs))
+    print(" ".join(best_obs))
     print(broken_display, broken_segment)
 
 
